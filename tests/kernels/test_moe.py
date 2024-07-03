@@ -14,7 +14,6 @@ from vllm.model_executor.models.mixtral import MixtralMoE
 CUDA_DEVICES = [
     f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 else 2)
 ]
-CUDA_DEVICES = [f"cuda:{1}"]
 
 
 def torch_moe(a, w1, w2, score, topk):
@@ -60,7 +59,6 @@ def test_fused_moe(m: int, n: int, k: int, e: int, topk: int,
 def test_mixtral_moe(dtype: torch.dtype, device: str):
     """Make sure our Mixtral MoE implementation agrees with the one from
     huggingface."""
-
     # Instantiate our and huggingface's MoE blocks
     config = MixtralConfig()
     hf_moe = MixtralSparseMoeBlock(config).to(dtype).to(device)
