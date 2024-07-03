@@ -11,6 +11,10 @@ from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import fused_moe
 from vllm.model_executor.models.mixtral import MixtralMoE
 
+CUDA_DEVICES = [
+    f"cuda:{i}" for i in range(1 if torch.cuda.device_count() == 1 else 2)
+]
+
 
 def torch_moe(a, w1, w2, score, topk):
     B, D = a.shape
@@ -35,19 +39,16 @@ def torch_moe(a, w1, w2, score, topk):
 @pytest.mark.parametrize("e", [8, 64])
 @pytest.mark.parametrize("topk", [2, 6])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_fused_moe(
-    m: int,
-    n: int,
-    k: int,
-    e: int,
-    topk: int,
-    dtype: torch.dtype,
-):
-    a = torch.randn((m, k), device='cuda', dtype=dtype) / 10
-    w1 = torch.randn((e, 2 * n, k), device='cuda', dtype=dtype) / 10
-    w2 = torch.randn((e, k, n), device='cuda', dtype=dtype) / 10
+@pytest.mark.parametrize("device", CUDA_DEVICES)
+def test_fused_moe(m: int, n: int, k: int, e: int, topk: int,
+                   dtype: torch.dtype, device: str):
 
-    score = torch.randn((m, e), device='cuda', dtype=dtype)
+    torch.set_default_device(device)
+    a = torch.randn((m, k), device=device, dtype=dtype) / 10
+    w1 = torch.randn((e, 2 * n, k), device=device, dtype=dtype) / 10
+    w2 = torch.randn((e, k, n), device=device, dtype=dtype) / 10
+
+    score = torch.randn((m, e), device=device, dtype=dtype)
     triton_output = fused_moe(a, w1, w2, score, topk, renormalize=False)
     torch_output = torch_moe(a, w1, w2, score, topk)
     assert torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0)
@@ -55,14 +56,15 @@ def test_fused_moe(
 
 @pytest.mark.parametrize("dtype",
                          [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("device", CUDA_DEVICES)
 @torch.inference_mode()
-def test_mixtral_moe(dtype: torch.dtype):
+def test_mixtral_moe(dtype: torch.dtype, device: str):
     """Make sure our Mixtral MoE implementation agrees with the one from
     huggingface."""
-
+    torch.set_default_device(device)
     # Instantiate our and huggingface's MoE blocks
     config = MixtralConfig()
-    hf_moe = MixtralSparseMoeBlock(config).to(dtype).to("cuda")
+    hf_moe = MixtralSparseMoeBlock(config).to(dtype).to(device)
     vllm_moe = MixtralMoE(
         num_experts=config.num_local_experts,
         top_k=config.num_experts_per_tok,
@@ -70,7 +72,7 @@ def test_mixtral_moe(dtype: torch.dtype):
         intermediate_size=config.intermediate_size,
         params_dtype=dtype,
         tp_size=1,
-    ).cuda()
+    ).to(device)
 
     # Load the weights
     vllm_moe.gate.weight.data[:] = hf_moe.gate.weight.data
@@ -81,7 +83,7 @@ def test_mixtral_moe(dtype: torch.dtype):
         vllm_moe.experts.w2_weight[i][:] = hf_moe.experts[i].w2.weight.data
 
     # Generate input batch of dimensions [batch_size, seq_len, hidden_dim]
-    hf_inputs = torch.randn((1, 64, config.hidden_size)).to(dtype).to("cuda")
+    hf_inputs = torch.randn((1, 64, config.hidden_size)).to(dtype).to(device)
     # vLLM uses 1D query [num_tokens, hidden_dim]
     vllm_inputs = hf_inputs.flatten(0, 1)
 
