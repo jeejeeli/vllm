@@ -12,20 +12,21 @@ from xformers.ops.fmha import memory_efficient_attention
 from xformers.ops.fmha.attn_bias import BlockDiagonalMask
 
 from vllm.attention import AttentionMetadata
-from vllm.config import CacheConfig, MultiModalConfig
+from vllm.config import CacheConfig, MultiModalConfig, LoRAConfig
 from vllm.inputs import INPUT_REGISTRY, InputContext, LLMInputs
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.models.utils import merge_multimodal_embeddings
+from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.base import MultiModalInputs
 from vllm.multimodal.utils import cached_get_tokenizer
 from vllm.sequence import IntermediateTensors, SequenceData
 
-from .interfaces import SupportsMultiModal
+from .interfaces import SupportsMultiModal, SupportsLoRA
 from .utils import init_vllm_registered_model
 
 
@@ -126,13 +127,48 @@ def input_processor_for_pixtral(ctx: InputContext, llm_inputs: LLMInputs):
 @MULTIMODAL_REGISTRY.register_max_image_tokens(get_max_pixtral_image_tokens)
 @INPUT_REGISTRY.register_dummy_data(dummy_data_for_pixtral)
 @INPUT_REGISTRY.register_input_processor(input_processor_for_pixtral)
-class PixtralForConditionalGeneration(nn.Module, SupportsMultiModal):
+class PixtralForConditionalGeneration(nn.Module, SupportsMultiModal,
+                                      SupportsLoRA):
+
+    packed_modules_mapping = {
+        "qkv_proj": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+        ],
+        "gate_up_proj": [
+            "gate_proj",
+            "up_proj",
+        ],
+    }
+
+    # LoRA specific attributes
+    supported_lora_modules = [
+        # lanuage model
+        "qkv_proj",
+        "o_proj",
+        "gate_up_proj",
+        "down_proj",
+        # vision encoder
+        "wq",
+        "wk",
+        "wv",
+        "wo",
+        "w1",
+        "w2",
+        "w3",
+        # vison tower
+        "w_out"
+    ]
+    embedding_modules = {}
+    embedding_padding_modules = []
 
     def __init__(self,
                  config: PretrainedConfig,
                  multimodal_config: MultiModalConfig,
                  cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None) -> None:
+                 quant_config: Optional[QuantizationConfig] = None,
+                 lora_config: Optional[LoRAConfig] = None) -> None:
         super().__init__()
 
         self.config = config
@@ -279,6 +315,15 @@ class PixtralForConditionalGeneration(nn.Module, SupportsMultiModal):
             name = '.'.join(name.split(".")[1:])
             param = vision_lang_adpter_dict[name]
             default_weight_loader(param, loaded_weight)
+
+    def get_mm_mapping(self) -> MultiModelKeys:
+        """
+        Get the module prefix in multimodal models
+        """
+        return MultiModelKeys.from_string_field(
+            language_model="language_model",
+            connector="vision_language_adapter",
+            tower_model="vision_encoder")
 
 
 # Vision encoder
