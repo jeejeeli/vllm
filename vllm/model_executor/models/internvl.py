@@ -16,12 +16,13 @@ from PIL import Image
 from transformers import PretrainedConfig
 
 from vllm.attention import AttentionMetadata
-from vllm.config import CacheConfig, MultiModalConfig
+from vllm.config import CacheConfig, LoRAConfig, MultiModalConfig
 from vllm.inputs import (INPUT_REGISTRY, DecoderOnlyInputs, InputContext,
                          token_inputs)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import Sampler, SamplerOutput
 from vllm.model_executor.models.intern_vit import InternVisionModel
+from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.base import MultiModalInputs
@@ -31,7 +32,7 @@ from vllm.utils import is_list_of
 
 from .clip import (dummy_image_for_clip, dummy_seq_data_for_clip,
                    get_clip_num_patches)
-from .interfaces import SupportsMultiModal, SupportsPP
+from .interfaces import SupportsLoRA, SupportsMultiModal, SupportsPP
 from .utils import (AutoWeightsLoader, flatten_bn, init_vllm_registered_model,
                     merge_multimodal_embeddings)
 
@@ -406,13 +407,44 @@ input_pipeline = InternVLInputPipeline(IMG_START, IMG_END, IMG_CONTEXT)
 @MULTIMODAL_REGISTRY.register_max_image_tokens(get_max_internvl_image_tokens)
 @INPUT_REGISTRY.register_dummy_data(input_pipeline.dummy_data)
 @INPUT_REGISTRY.register_input_processor(input_pipeline.input_processor)
-class InternVLChatModel(nn.Module, SupportsMultiModal, SupportsPP):
+class InternVLChatModel(nn.Module, SupportsMultiModal, SupportsPP,
+                        SupportsLoRA):
+    packed_modules_mapping = {
+        "wqkv": ["wqkv"],
+         "qkv": ["qkv"],
+        "gate_up_proj": [
+            "w1",
+            "w3",
+        ],
+    }
+    # LoRA specific attributes
+    supported_lora_modules = [
+        # language model
+        "wqkv"
+        "wo",
+        "gate_up_proj",
+        "w2"
+        "output",
+        # vision tower
+        "qkv",
+        "proj"
+        "fc1",
+        "fc2",
+        # mlp
+        "mlp1.1",
+        "mlp1.3",
+    ]
+    embedding_modules = {}
+    embedding_padding_modules = []
 
-    def __init__(self,
-                 config: PretrainedConfig,
-                 multimodal_config: MultiModalConfig,
-                 cache_config: Optional[CacheConfig] = None,
-                 quant_config: Optional[QuantizationConfig] = None) -> None:
+    def __init__(
+        self,
+        config: PretrainedConfig,
+        multimodal_config: MultiModalConfig,
+        cache_config: Optional[CacheConfig] = None,
+        quant_config: Optional[QuantizationConfig] = None,
+        lora_config: Optional[LoRAConfig] = None,
+    ) -> None:
         super().__init__()
 
         self.config = config
@@ -613,3 +645,12 @@ class InternVLChatModel(nn.Module, SupportsMultiModal, SupportsPP):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         loader = AutoWeightsLoader(self)
         loader.load_weights(weights)
+
+    def get_mm_mapping(self) -> MultiModelKeys:
+        """
+        Get the module prefix in multimodal models
+        """
+        return MultiModelKeys.from_string_field(
+            language_model="language_model",
+            connector="mlp1",
+            tower_model="vision_model")
