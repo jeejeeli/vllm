@@ -284,7 +284,7 @@ mm_impl_template = create_template(IMPL_TEMPLATE)
 prepack_dispatch_template = create_template(PREPACK_TEMPLATE)
 
 
-def create_sources(impl_config: ImplConfig, num_impl_files=2):
+def create_sources(impl_config: ImplConfig, num_impl_files=1):
     sources = []
 
     type_name = generate_type_signature(impl_config.type_config)
@@ -457,12 +457,18 @@ def generate():
             )),
     ]
 
-    schedules = list(set([x[1] for x in default_heuristic]))
+    # Do not use schedules = list(set(...)) because we need to make sure
+    # the output list is deterministic; otherwise the generated kernel file
+    # will be non-deterministic and causes ccache miss.
+    schedules = []
+    for _, schedule_config in default_heuristic:
+        if schedule_config not in schedules:
+            schedules.append(schedule_config)
 
     impl_configs = []
 
     GPTQ_kernel_type_configs = list(
-        (TypeConfig(
+        TypeConfig(
             element_a=element_a,
             element_b=element_b,
             element_b_scale=element_a,
@@ -470,7 +476,7 @@ def generate():
             element_d=element_a,
             accumulator=DataType.f32,
         ) for element_b in (VLLMDataType.u4b8, VLLMDataType.u8b128)
-         for element_a in (DataType.f16, DataType.bf16)))
+        for element_a in (DataType.f16, DataType.bf16))
 
     GPTQ_kernel_specializations = [
         Specialization(with_C=False, with_zeropoints=False, with_scales=True)
@@ -484,7 +490,7 @@ def generate():
     ]
 
     AWQ_kernel_type_configs = list(
-        (TypeConfig(
+        TypeConfig(
             element_a=element_a,
             element_b=element_b,
             element_b_scale=element_a,
@@ -492,7 +498,7 @@ def generate():
             element_d=element_a,
             accumulator=DataType.f32,
         ) for element_b in (DataType.u4, DataType.u8)
-         for element_a in (DataType.f16, DataType.bf16)))
+        for element_a in (DataType.f16, DataType.bf16))
 
     AWQ_kernel_specializations = [
         Specialization(with_C=False, with_zeropoints=True, with_scales=True)
