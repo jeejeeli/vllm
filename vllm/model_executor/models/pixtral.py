@@ -27,8 +27,8 @@ from vllm.model_executor.layers.linear import (MergedColumnParallelLinear,
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-from vllm.model_executor.models.utils import merge_multimodal_embeddings
 from vllm.model_executor.models.module_mapping import MultiModelKeys
+from vllm.model_executor.models.utils import merge_multimodal_embeddings
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.base import MultiModalKwargs
@@ -38,9 +38,7 @@ from vllm.sequence import IntermediateTensors, SequenceData
 from vllm.transformers_utils.processor import cached_get_processor
 from vllm.utils import is_list_of
 
-from .interfaces import SupportsMultiModal, SupportsLoRA
-from .utils import init_vllm_registered_model
-from .interfaces import SupportsMultiModal, SupportsPP
+from .interfaces import SupportsLoRA, SupportsMultiModal, SupportsPP
 from .utils import init_vllm_registered_model, maybe_prefix
 
 try:
@@ -153,7 +151,7 @@ def input_processor_for_pixtral(ctx: InputContext, inputs: DecoderOnlyInputs):
 @INPUT_REGISTRY.register_dummy_data(dummy_data_for_pixtral)
 @INPUT_REGISTRY.register_input_processor(input_processor_for_pixtral)
 class PixtralForConditionalGeneration(nn.Module, SupportsMultiModal,
-                                      SupportsPP,SupportsLoRA):
+                                      SupportsPP, SupportsLoRA):
     packed_modules_mapping = {
         "qkv_proj": [
             "q_proj",
@@ -168,7 +166,7 @@ class PixtralForConditionalGeneration(nn.Module, SupportsMultiModal,
 
     # LoRA specific attributes
     supported_lora_modules = [
-        # lanuage model
+        # language model
         "qkv_proj",
         "o_proj",
         "gate_up_proj",
