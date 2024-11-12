@@ -3,14 +3,20 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from vllm import _custom_ops as ops
+
 from vllm.model_executor.layers.linear import (LinearBase, LinearMethodBase,
                                                UnquantizedLinearMethod)
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.parameter import (GroupQuantScaleParameter,
                                            PackedvLLMParameter)
+from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+from vllm.model_executor.layers.quantization.awq_marlin import (
+    AWQMoEMethod,
+)
 
 
+    
 class AWQConfig(QuantizationConfig):
     """Config class for AWQ.
 
@@ -75,6 +81,8 @@ class AWQConfig(QuantizationConfig):
             if is_layer_skipped_awq(prefix, self.modules_to_not_convert):
                 return UnquantizedLinearMethod()
             return AWQLinearMethod(self)
+        elif isinstance(layer, FusedMoE):
+            return AWQMoEMethod(self)
         return None
 
 

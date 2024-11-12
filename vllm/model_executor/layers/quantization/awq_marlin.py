@@ -11,7 +11,6 @@ from vllm.model_executor.layers.fused_moe.layer import (
 from vllm.model_executor.layers.linear import (LinearBase, LinearMethodBase,
                                                UnquantizedLinearMethod,
                                                set_weight_attrs)
-from vllm.model_executor.layers.quantization.awq import is_layer_skipped_awq
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
 from vllm.model_executor.layers.quantization.utils import replace_parameter
@@ -152,6 +151,10 @@ class AWQMarlinConfig(QuantizationConfig):
                                       group_size=group_size,
                                       has_zp=zero_point)
 
+# Copy directly from `vllm.model_executor.layers.quantization.awq` to avoid
+# circular import.
+def is_layer_skipped_awq(prefix: str, modules_to_not_convert: List[str]):
+    return any(module_name in prefix for module_name in modules_to_not_convert)
 
 class AWQMarlinLinearMethod(LinearMethodBase):
     """Linear method for AWQ Marlin.
