@@ -16,7 +16,7 @@ from vllm.lora.ops.sgmv_shrink import sgmv_shrink
 from vllm.platforms import current_platform
 
 from .utils import (generate_data, generate_data_for_expand_nslices,
-                    ref_torch_groupgemm, ref_torch_groupgemm_with_slice)
+                    ref_torch_groupgemm)
 
 HIDDEN_SIZES = [
     128,
@@ -313,9 +313,9 @@ def test_punica_expand_nslices(
     seq_length = 128 if op_type == "sgmv" else 1
     (
         inputs_tensor,
-        lora_b_stacked,
-        output_tensor,
-        ref_outputs_tensor,
+        lora_weights_lst,
+        our_outputs,
+        ref_outputs,
         b_seq_start_loc,
         lora_indices_tensor,
         seq_len_tensor,
@@ -336,43 +336,45 @@ def test_punica_expand_nslices(
         max_seq_length = max_seq_length[0].item()
     else:
         max_seq_length = max_seq_length.item()
-    offset_start = 0
+    slice_offset = 0
+    for index in range(nslices):
+        lora_weights = lora_weights_lst[index]
+        if op_type == "sgmv":
+            sgmv_expand_slice(
+                inputs_tensor,
+                lora_weights,
+                our_outputs,
+                b_seq_start_loc,
+                seq_len_tensor,
+                lora_indices_tensor,
+                batches,
+                max_seq_length,
+                token_nums,
+                slice_offset,
+                hidden_size,
+                add_inputs=True,
+            )
+        else:
 
-    if op_type == "sgmv":
-        sgmv_expand_slice(
+            bgmv_expand_slice(
+                inputs_tensor,
+                lora_weights,
+                our_outputs,
+                indices,
+                slice_offset,
+                slice_size=hidden_size,
+                add_inputs=True,
+            )
+        ref_torch_groupgemm(
+            ref_outputs[:, slice_offset:slice_offset + hidden_size],
             inputs_tensor,
-            lora_b_stacked,
-            output_tensor,
-            b_seq_start_loc,
-            seq_len_tensor,
+            lora_weights,
             lora_indices_tensor,
+            seq_len_tensor,
             batches,
-            max_seq_length,
-            token_nums,
-            offset_start,
-            add_inputs=True,
-        )
-    else:
-        # TODO fix this
-        bgmv_expand_slice(
-            inputs_tensor,
-            lora_b_stacked,
-            output_tensor,
-            indices,
-            offset_start,
-            slice_size=hidden_size,
-            add_inputs=True,
+            1.0,
+            op_type="expand",
         )
 
-    ref_torch_groupgemm_with_slice(
-        ref_outputs_tensor,
-        inputs_tensor,
-        lora_b_stacked,
-        lora_indices_tensor,
-        seq_len_tensor,
-        batches,
-        1.0,
-        op_type="expand",
-    )
-
-    assert_close(output_tensor, ref_outputs_tensor)
+        slice_offset += hidden_size
+    assert_close(our_outputs, ref_outputs)
