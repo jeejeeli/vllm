@@ -16,7 +16,7 @@ from vllm.lora.ops.sgmv_shrink import sgmv_shrink
 from vllm.platforms import current_platform
 
 from .utils import (generate_data, generate_data_for_expand_nslices,
-                    ref_torch_groupgemm)
+                    ref_torch_groupgemm, ref_torch_groupgemm_with_slice)
 
 HIDDEN_SIZES = [
     128,
@@ -364,7 +364,7 @@ def test_punica_expand_nslices(
             add_inputs=True,
         )
 
-    ref_torch_groupgemm(
+    ref_torch_groupgemm_with_slice(
         ref_outputs_tensor,
         inputs_tensor,
         lora_b_stacked,

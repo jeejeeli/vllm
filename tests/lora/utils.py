@@ -108,6 +108,33 @@ def ref_torch_groupgemm(
     scaling,
     op_type,
 ) -> torch.Tensor:
+    out_list = []
+    current_offset = 0
+    for lora_index, b_length in zip(range(batches), seq_len_tensor):
+        input_weight = inputs[current_offset:b_length + current_offset, :]
+        current_offset += b_length
+        lora_weight = lora_weights[lora_indices_tensor[lora_index]]
+        result = torch.nn.functional.linear(input_weight, lora_weight)
+        result *= scaling
+        out_list.append(result)
+    cat_result = torch.cat(out_list, dim=0)
+    if op_type == "expand":
+        out_tensor += cat_result
+    else:
+        out_tensor.copy_(cat_result)
+    return
+
+
+def ref_torch_groupgemm_with_slice(
+    out_tensor,
+    inputs,
+    lora_weights,
+    lora_indices_tensor,
+    seq_len_tensor,
+    batches,
+    scaling,
+    op_type,
+) -> torch.Tensor:
     slice_list = []
     for i in range(len(lora_weights)):
         out_list = []
