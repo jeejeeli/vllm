@@ -108,20 +108,24 @@ def ref_torch_groupgemm(
     scaling,
     op_type,
 ) -> torch.Tensor:
-    out_list = []
-    current_offset = 0
-    for lora_index, b_length in zip(range(batches), seq_len_tensor):
-        input_weight = inputs[current_offset:b_length + current_offset, :]
-        current_offset += b_length
-        lora_weight = lora_weights[lora_indices_tensor[lora_index]]
-        result = torch.nn.functional.linear(input_weight, lora_weight)
-        result *= scaling
-        out_list.append(result)
-    cat_result = torch.cat(out_list, dim=0)
+    slice_list = []
+    for i in range(len(lora_weights)):
+        out_list = []
+        current_offset = 0
+        for lora_index, b_length in zip(range(batches), seq_len_tensor):
+            input = inputs[i, current_offset:b_length + current_offset, :]
+            current_offset += b_length
+            lora_weight = lora_weights[i][lora_indices_tensor[lora_index]]
+            result = torch.nn.functional.linear(input, lora_weight)
+            result *= scaling
+            out_list.append(result)
+        cat_result = torch.cat(out_list, dim=0)
+        slice_list.append(cat_result)
+    slice_result = torch.cat(slice_list, dim=1)
     if op_type == "expand":
-        out_tensor += cat_result
+        out_tensor += slice_result
     else:
-        out_tensor.copy_(cat_result)
+        out_tensor.copy_(slice_result)
     return
 
 
@@ -197,7 +201,7 @@ def generate_data_for_expand_nslices(batches, hidden_size, lora_nums, max_rank,
     ).to(device)
     total_tokens = seq_len_tensor.sum()
     inputs_tensor = torch.rand(
-        (total_tokens, max_rank),
+        (nslices, total_tokens, max_rank),
         dtype=dtype,
     ).to(device)
     lora_weights_lst = []
