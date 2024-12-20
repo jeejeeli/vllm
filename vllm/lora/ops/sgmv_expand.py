@@ -57,15 +57,16 @@ def _sgmv_expand_kernel(
 
     M = tl.load(seq_lens + cur_batch)
 
-    num_pid_m = tl.cdiv(M, BLOCK_M)
-    num_pid_n = tl.cdiv(N, BLOCK_N)
-    GROUP_SIZE_M: tl.constexpr = 1
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    grid_m = tl.cdiv(M, BLOCK_M)
+    grid_n = tl.cdiv(N, BLOCK_N)
+    GROUP_M: tl.constexpr = 1
+    width = GROUP_M * grid_n
+    group_id = pid // width
+    first_pid_m = group_id * GROUP_M
+    group_idx = pid % width
+    group_size_m = min(grid_m - first_pid_m, GROUP_M)
+    pid_m = first_pid_m + (group_idx % group_size_m)
+    pid_n = group_idx // group_size_m
 
     if pid_m * BLOCK_M > M:
         return
