@@ -20,15 +20,14 @@ import time
 import uuid
 import warnings
 import weakref
-from asyncio import FIRST_COMPLETED, AbstractEventLoop, Future, Task
-from collections import UserDict, defaultdict
+from asyncio import FIRST_COMPLETED, AbstractEventLoop, Task
+from collections import OrderedDict, UserDict, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache, partial, wraps
 from typing import (TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable,
                     Dict, Generator, Generic, Hashable, List, Literal,
-                    Optional, OrderedDict, Set, Tuple, Type, TypeVar, Union,
-                    overload)
+                    Optional, Tuple, Type, TypeVar, Union, overload)
 from uuid import uuid4
 
 import numpy as np
@@ -154,9 +153,11 @@ TORCH_DTYPE_TO_NUMPY_DTYPE = {
 }
 
 P = ParamSpec('P')
-K = TypeVar("K")
 T = TypeVar("T")
 U = TypeVar("U")
+
+_K = TypeVar("_K", bound=Hashable)
+_V = TypeVar("_V")
 
 
 class _Sentinel:
@@ -190,50 +191,48 @@ class Counter:
         self.counter = 0
 
 
-class LRUCache(Generic[T]):
+class LRUCache(Generic[_K, _V]):
 
-    def __init__(self, capacity: int):
-        self.cache: OrderedDict[Hashable, T] = OrderedDict()
-        self.pinned_items: Set[Hashable] = set()
+    def __init__(self, capacity: int) -> None:
+        self.cache = OrderedDict[_K, _V]()
+        self.pinned_items = set[_K]()
         self.capacity = capacity
 
-    def __contains__(self, key: Hashable) -> bool:
+    def __contains__(self, key: _K) -> bool:
         return key in self.cache
 
     def __len__(self) -> int:
         return len(self.cache)
 
-    def __getitem__(self, key: Hashable) -> T:
+    def __getitem__(self, key: _K) -> _V:
         value = self.cache[key]  # Raise KeyError if not exists
         self.cache.move_to_end(key)
         return value
 
-    def __setitem__(self, key: Hashable, value: T) -> None:
+    def __setitem__(self, key: _K, value: _V) -> None:
         self.put(key, value)
 
-    def __delitem__(self, key: Hashable) -> None:
+    def __delitem__(self, key: _K) -> None:
         self.pop(key)
 
-    def touch(self, key: Hashable) -> None:
+    def touch(self, key: _K) -> None:
         self.cache.move_to_end(key)
 
-    def get(self,
-            key: Hashable,
-            default_value: Optional[T] = None) -> Optional[T]:
-        value: Optional[T]
+    def get(self, key: _K, default: Optional[_V] = None) -> Optional[_V]:
+        value: Optional[_V]
         if key in self.cache:
             value = self.cache[key]
             self.cache.move_to_end(key)
         else:
-            value = default_value
+            value = default
         return value
 
-    def put(self, key: Hashable, value: T) -> None:
+    def put(self, key: _K, value: _V) -> None:
         self.cache[key] = value
         self.cache.move_to_end(key)
         self._remove_old_if_needed()
 
-    def pin(self, key: Hashable) -> None:
+    def pin(self, key: _K) -> None:
         """
         Pins a key in the cache preventing it from being
         evicted in the LRU order.
@@ -242,13 +241,13 @@ class LRUCache(Generic[T]):
             raise ValueError(f"Cannot pin key: {key} not in cache.")
         self.pinned_items.add(key)
 
-    def _unpin(self, key: Hashable) -> None:
+    def _unpin(self, key: _K) -> None:
         self.pinned_items.remove(key)
 
-    def _on_remove(self, key: Hashable, value: Optional[T]):
+    def _on_remove(self, key: _K, value: Optional[_V]) -> None:
         pass
 
-    def remove_oldest(self, remove_pinned=False):
+    def remove_oldest(self, *, remove_pinned: bool = False) -> None:
         if not self.cache:
             return
 
@@ -262,17 +261,15 @@ class LRUCache(Generic[T]):
                                    "cannot remove oldest from the cache.")
         else:
             lru_key = next(iter(self.cache))
-        self.pop(lru_key)
+        self.pop(lru_key)  # type: ignore
 
     def _remove_old_if_needed(self) -> None:
         while len(self.cache) > self.capacity:
             self.remove_oldest()
 
-    def pop(self,
-            key: Hashable,
-            default_value: Optional[T] = None) -> Optional[T]:
+    def pop(self, key: _K, default: Optional[_V] = None) -> Optional[_V]:
         run_on_remove = key in self.cache
-        value: Optional[T] = self.cache.pop(key, default_value)
+        value = self.cache.pop(key, default)
         # remove from pinned items
         if key in self.pinned_items:
             self._unpin(key)
@@ -280,7 +277,7 @@ class LRUCache(Generic[T]):
             self._on_remove(key, value)
         return value
 
-    def clear(self):
+    def clear(self) -> None:
         while len(self.cache) > 0:
             self.remove_oldest(remove_pinned=True)
         self.cache.clear()
@@ -370,72 +367,23 @@ def _next_task(iterator: AsyncGenerator[T, None],
     return loop.create_task(iterator.__anext__())  # type: ignore[arg-type]
 
 
-async def iterate_with_cancellation(
-    iterator: AsyncGenerator[T, None],
-    is_cancelled: Callable[[], Awaitable[bool]],
-) -> AsyncGenerator[T, None]:
-    """Convert async iterator into one that polls the provided function
-    at least once per second to check for client cancellation.
-    """
-
-    loop = asyncio.get_running_loop()
-
-    awaits: List[Future[T]] = [_next_task(iterator, loop)]
-    next_cancel_check: float = 0
-    while True:
-        done, pending = await asyncio.wait(awaits, timeout=1.5)
-
-        # Check for cancellation at most once per second
-        time_now = time.time()
-        if time_now >= next_cancel_check:
-            if await is_cancelled():
-                with contextlib.suppress(BaseException):
-                    awaits[0].cancel()
-                    await iterator.aclose()
-                raise asyncio.CancelledError("client cancelled")
-            next_cancel_check = time_now + 1
-
-        if done:
-            try:
-                item = await awaits[0]
-                awaits[0] = _next_task(iterator, loop)
-                yield item
-            except StopAsyncIteration:
-                # we are done
-                return
-
-
 async def merge_async_iterators(
-    *iterators: AsyncGenerator[T, None],
-    is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
-) -> AsyncGenerator[Tuple[int, T], None]:
+    *iterators: AsyncGenerator[T,
+                               None], ) -> AsyncGenerator[Tuple[int, T], None]:
     """Merge multiple asynchronous iterators into a single iterator.
 
     This method handle the case where some iterators finish before others.
     When it yields, it yields a tuple (i, item) where i is the index of the
     iterator that yields the item.
-
-    It also optionally polls a provided function at least once per second
-    to check for client cancellation.
     """
 
     loop = asyncio.get_running_loop()
 
     awaits = {_next_task(pair[1], loop): pair for pair in enumerate(iterators)}
-    timeout = None if is_cancelled is None else 1.5
-    next_cancel_check: float = 0
     try:
         while awaits:
-            done, pending = await asyncio.wait(awaits.keys(),
-                                               return_when=FIRST_COMPLETED,
-                                               timeout=timeout)
-            if is_cancelled is not None:
-                # Check for cancellation at most once per second
-                time_now = time.time()
-                if time_now >= next_cancel_check:
-                    if await is_cancelled():
-                        raise asyncio.CancelledError("client cancelled")
-                    next_cancel_check = time_now + 1
+            done, _ = await asyncio.wait(awaits.keys(),
+                                         return_when=FIRST_COMPLETED)
             for d in done:
                 pair = awaits.pop(d)
                 try:
@@ -824,7 +772,7 @@ def get_dtype_size(dtype: torch.dtype) -> int:
 # `collections` helpers
 def is_list_of(
     value: object,
-    typ: Type[T],
+    typ: Union[type[T], tuple[type[T], ...]],
     *,
     check: Literal["first", "all"] = "first",
 ) -> TypeIs[List[T]]:
@@ -890,10 +838,6 @@ def json_map_leaves(func: Callable[[T], U], value: JSONTree[T]) -> JSONTree[U]:
 def flatten_2d_lists(lists: List[List[T]]) -> List[T]:
     """Flatten a list of lists to a single list."""
     return [item for sublist in lists for item in sublist]
-
-
-_K = TypeVar("_K", bound=Hashable)
-_V = TypeVar("_V")
 
 
 def full_groupby(values: Iterable[_V], *, key: Callable[[_V], _K]):
@@ -1331,6 +1275,7 @@ async def _run_task_with_lock(task: Callable, lock: asyncio.Lock, *args,
 def supports_kw(
     callable: Callable[..., object],
     kw_name: str,
+    *,
     requires_kw_only: bool = False,
     allow_var_kwargs: bool = True,
 ) -> bool:
@@ -1375,6 +1320,8 @@ def resolve_mm_processor_kwargs(
     init_kwargs: Optional[Mapping[str, object]],
     inference_kwargs: Optional[Mapping[str, object]],
     callable: Callable[..., object],
+    *,
+    requires_kw_only: bool = True,
     allow_var_kwargs: bool = False,
 ) -> Dict[str, Any]:
     """Applies filtering to eliminate invalid mm_processor_kwargs, i.e.,
@@ -1393,11 +1340,17 @@ def resolve_mm_processor_kwargs(
     runtime_mm_kwargs = get_allowed_kwarg_only_overrides(
         callable,
         overrides=inference_kwargs,
-        allow_var_kwargs=allow_var_kwargs)
+        requires_kw_only=requires_kw_only,
+        allow_var_kwargs=allow_var_kwargs,
+    )
 
     # Filter init time multimodal processor kwargs provided
     init_mm_kwargs = get_allowed_kwarg_only_overrides(
-        callable, overrides=init_kwargs, allow_var_kwargs=allow_var_kwargs)
+        callable,
+        overrides=init_kwargs,
+        requires_kw_only=requires_kw_only,
+        allow_var_kwargs=allow_var_kwargs,
+    )
 
     # Merge the final processor kwargs, prioritizing inference
     # time values over the initialization time values.
@@ -1408,6 +1361,8 @@ def resolve_mm_processor_kwargs(
 def get_allowed_kwarg_only_overrides(
     callable: Callable[..., object],
     overrides: Optional[Mapping[str, object]],
+    *,
+    requires_kw_only: bool = True,
     allow_var_kwargs: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1439,16 +1394,21 @@ def get_allowed_kwarg_only_overrides(
         for kwarg_name, val in overrides.items()
         if supports_kw(callable,
                        kwarg_name,
-                       requires_kw_only=True,
+                       requires_kw_only=requires_kw_only,
                        allow_var_kwargs=allow_var_kwargs)
     }
 
     # If anything is dropped, log a warning
     dropped_keys = overrides.keys() - filtered_overrides.keys()
     if dropped_keys:
-        logger.warning(
-            "The following intended overrides are not keyword-only args "
-            "and and will be dropped: %s", dropped_keys)
+        if requires_kw_only:
+            logger.warning(
+                "The following intended overrides are not keyword-only args "
+                "and and will be dropped: %s", dropped_keys)
+        else:
+            logger.warning(
+                "The following intended overrides are not keyword args "
+                "and and will be dropped: %s", dropped_keys)
 
     return filtered_overrides
 
@@ -1617,8 +1577,18 @@ def direct_register_custom_op(
     library object. If you want to bind the operator to a different library,
     make sure the library object is alive when the operator is used.
     """
-    if is_in_doc_build() or not supports_custom_op():
+    if is_in_doc_build():
         return
+
+    if not supports_custom_op():
+        assert not current_platform.is_cuda_alike(), (
+            "cuda platform needs torch>=2.4 to support custom op, "
+            "chances are you are using an old version of pytorch "
+            "or a custom build of pytorch. It is recommended to "
+            "use vLLM in a fresh new environment and let it install "
+            "the required dependencies.")
+        return
+
     import torch.library
     if hasattr(torch.library, "infer_schema"):
         schema_str = torch.library.infer_schema(op_func,
