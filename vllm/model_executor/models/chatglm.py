@@ -162,14 +162,21 @@ class GLM4VProcessingInfo(BaseProcessingInfo):
         seq_len: int,
         mm_counts: Mapping[str, int],
     ) -> Mapping[str, int]:
-
-        return {"image": self.image_token_num + 2}
+        hf_config = self.get_hf_config()
+        if hasattr(hf_config, "vision_config"):
+            return {"image": self.image_token_num + 2}
+        else:
+            return {"image": 0}
 
     def _pre_calculate(self):
         hf_config = self.get_hf_config()
-        vision_config = hf_config.vision_config
-        self.image_token_num = calculate_image_placeholder(vision_config)
-        self.image_size = vision_config["image_size"]
+        if hasattr(hf_config, "vision_config"):
+            self.image_token_num = calculate_image_placeholder(
+                hf_config.vision_config)
+            self.image_size = hf_config.vision_config["image_size"]
+        else:
+            self.image_token_num = 0
+            self.image_size = 0
 
     def get_num_image_tokens(self) -> int:
         return self.image_token_num + 2
@@ -192,20 +199,28 @@ class GLM4VDummyInputsBuilder(BaseDummyInputsBuilder[GLM4VProcessingInfo]):
         seq_len: int,
         mm_counts: Mapping[str, int],
     ) -> ProcessorInputs:
-        num_images = mm_counts.get("image", 0)
-        target_width, target_height = self.info.get_image_size()
+        hf_config = self.info.get_hf_config()
 
-        mm_data = {
-            "image":
-            self._get_dummy_images(width=target_width,
-                                   height=target_height,
-                                   num_images=num_images)
-        }
-        text = "<|begin_of_image|><|endoftext|><|end_of_image|>"
-        return ProcessorInputs(
-            prompt_text=text,
-            mm_data=mm_data,
-        )
+        if hasattr(hf_config, "vision_config"):
+            num_images = mm_counts.get("image", 0)
+            target_width, target_height = self.info.get_image_size()
+
+            mm_data = {
+                "image":
+                self._get_dummy_images(width=target_width,
+                                       height=target_height,
+                                       num_images=num_images)
+            }
+            text = "<|begin_of_image|><|endoftext|><|end_of_image|>"
+            return ProcessorInputs(
+                prompt_text=text,
+                mm_data=mm_data,
+            )
+        else:
+            return ProcessorInputs(
+                prompt_text="",
+                mm_data={},
+            )
 
 
 class GLM4VMultiModalProcessor(BaseMultiModalProcessor[GLM4VProcessingInfo]):
